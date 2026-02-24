@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realistic Web FPS</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Courier New', Courier, monospace; background-color: #000; }
+        
+        /* UI Elements */
+        #crosshair {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            width: 12px;
+            height: 12px;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 10;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255, 255, 255, 0.8);
+        }
+        #crosshair::before { top: 50%; left: 0; width: 100%; height: 2px; margin-top: -1px; }
+        #crosshair::after { left: 50%; top: 0; height: 100%; width: 2px; margin-left: -1px; }
+
+        #hitmarker {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            width: 30px;
+            height: 30px;
+            transform: translate(-50%, -50%) rotate(45deg);
+            pointer-events: none;
+            z-index: 11;
+            display: none;
+        }
+        .hit-line {
+            position: absolute;
+            background: #ff0000;
+        }
+        .hl-1 { top: 0; left: 50%; width: 2px; height: 10px; transform: translateX(-50%); }
+        .hl-2 { bottom: 0; left: 50%; width: 2px; height: 10px; transform: translateX(-50%); }
+        .hl-3 { left: 0; top: 50%; height: 2px; width: 10px; transform: translateY(-50%); }
+        .hl-4 { right: 0; top: 50%; height: 2px; width: 10px; transform: translateY(-50%); }
+
+        #hud {
+            position: fixed;
+            bottom: 30px;
+            left: 30px;
+            color: #fff;
+            z-index: 10;
+            pointer-events: none;
+        }
+        .stat { font-size: 24px; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; }
+        .stat span { color: #f00; }
+
+        #instructions {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.9) 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 20;
+            text-align: center;
+        }
+        h1 { font-size: 60px; margin: 0; color: #f00; letter-spacing: 10px; }
+        .key { background: #333; padding: 5px 10px; border-radius: 4px; margin: 0 5px; font-size: 0.8em; }
+        
+        /* Settings UI */
+        #settings {
+            margin-top: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 0, 0, 0.3);
+            width: 300px;
+        }
+        .setting-row { margin-bottom: 10px; }
+        input[type=range] { width: 100%; cursor: pointer; accent-color: #f00; }
+        #start-btn {
+            margin-top: 15px;
+            padding: 10px 30px;
+            background: #f00;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        #start-btn:hover { background: #b00; }
+    </style>
+</head>
+<body>
+
+    <div id="crosshair"></div>
+    <div id="hitmarker">
+        <div class="hit-line hl-1"></div>
+        <div class="hit-line hl-2"></div>
+        <div class="hit-line hl-3"></div>
+        <div class="hit-line hl-4"></div>
+    </div>
+    
+    <div id="hud">
+        <div class="stat">SCORE: <span id="score">0000</span></div>
+    </div>
+
+    <div id="instructions">
+        <h1>TACTICAL OPS</h1>
+        <p>
+            <span class="key">W,A,S,D</span> MOVE | 
+            <span class="key">SPACE</span> JUMP | 
+            <span class="key">L-CLICK</span> SHOOT
+        </p>
+        
+        <div id="settings">
+            <div class="setting-row">
+                <label>MOUSE SENSITIVITY: <span id="sens-val">2.0</span></label>
+                <input type="range" id="sens-slider" min="0.5" max="10.0" step="0.1" value="2.0">
+            </div>
+            <button id="start-btn">DEPLOY TO FIELD</button>
+        </div>
+        <p style="font-size: 0.8em; margin-top: 10px; opacity: 0.7;">Press ESC to pause and change settings</p>
+    </div>
+
+    <script>
+        // Core Variables
+        let scene, camera, renderer, raycaster, clock;
+        let gunGroup, muzzleFlash, muzzleLight;
+        let score = 0;
+        let targets = [];
+
+        // Movement & Controls
+        let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false, canJump = false;
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        
+        // Settings
+        let sensitivity = 0.002; // Base sensitivity
+
+        // Effects Variables
+        let recoilAmount = 0;
+        let bobbingCounter = 0;
+        let mouseX = 0, mouseY = 0;
+
+        function init() {
+            clock = new THREE.Clock();
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+            scene.fog = new THREE.Fog(0x050505, 0, 80);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.rotation.order = 'YXZ';
+
+            // Renderer Setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            // Lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
+            scene.add(ambientLight);
+
+            const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            sunLight.position.set(10, 20, 10);
+            sunLight.castShadow = true;
+            scene.add(sunLight);
+
+            // Floor
+            const floorGeo = new THREE.PlaneGeometry(200, 200);
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            // Environment: Pillars
+            for(let i=0; i<30; i++) {
+                const h = 5 + Math.random() * 15;
+                const pillarGeo = new THREE.BoxGeometry(2, h, 2);
+                const pillarMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+                const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+                pillar.position.set((Math.random()-0.5)*150, h/2, (Math.random()-0.5)*150);
+                pillar.castShadow = true;
+                pillar.receiveShadow = true;
+                scene.add(pillar);
+            }
+
+            // Gun Model
+            createGun();
+
+            // Initial Targets
+            for (let i = 0; i < 15; i++) createTarget();
+
+            raycaster = new THREE.Raycaster();
+            setupControls();
+            
+            window.addEventListener('resize', onWindowResize, false);
+            window.addEventListener('mousedown', onShoot, false);
+
+            animate();
+        }
+
+        function createGun() {
+            gunGroup = new THREE.Group();
+            const bodyGeo = new THREE.BoxGeometry(0.15, 0.2, 0.6);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.8, roughness: 0.2 });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            const barrelGeo = new THREE.CylinderGeometry(0.04, 0.04, 0.4);
+            barrelGeo.rotateX(Math.PI / 2);
+            const barrel = new THREE.Mesh(barrelGeo, bodyMat);
+            barrel.position.z = -0.4;
+            gunGroup.add(body);
+            gunGroup.add(barrel);
+            
+            const flashGeo = new THREE.SphereGeometry(0.1, 8, 8);
+            const flashMat = new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 0 });
+            muzzleFlash = new THREE.Mesh(flashGeo, flashMat);
+            muzzleFlash.position.z = -0.65;
+            gunGroup.add(muzzleFlash);
+
+            muzzleLight = new THREE.PointLight(0xffaa00, 0, 5);
+            muzzleLight.position.z = -0.65;
+            gunGroup.add(muzzleLight);
+
+            gunGroup.position.set(0.3, -0.3, -0.5);
+            camera.add(gunGroup);
+            scene.add(camera);
+        }
+
+        function createTarget() {
+            const geo = new THREE.IcosahedronGeometry(1.2, 0);
+            const mat = new THREE.MeshStandardMaterial({ color: 0xff3300, emissive: 0x550000 });
+            const target = new THREE.Mesh(geo, mat);
+            target.position.set((Math.random()-0.5)*80, 2 + Math.random()*15, (Math.random()-0.5)*80);
+            target.castShadow = true;
+            scene.add(target);
+            targets.push(target);
+        }
+
+        function setupControls() {
+            const instr = document.getElementById('instructions');
+            const startBtn = document.getElementById('start-btn');
+            const sensSlider = document.getElementById('sens-slider');
+            const sensVal = document.getElementById('sens-val');
+
+            // Handle Sensitivity Change
+            sensSlider.addEventListener('input', (e) => {
+                const val = parseFloat(e.target.value);
+                sensVal.innerText = val.toFixed(1);
+                sensitivity = val * 0.001; // Scale slider value to engine sensitivity
+            });
+
+            startBtn.addEventListener('click', () => document.body.requestPointerLock());
+
+            document.addEventListener('pointerlockchange', () => {
+                instr.style.display = document.pointerLockElement === document.body ? 'none' : 'flex';
+            });
+
+            const onKey = (val) => (e) => {
+                switch(e.code) {
+                    case 'KeyW': moveForward = val; break;
+                    case 'KeyA': moveLeft = val; break;
+                    case 'KeyS': moveBackward = val; break;
+                    case 'KeyD': moveRight = val; break;
+                    case 'Space': if(val && canJump) { velocity.y += 180; canJump = false; } break;
+                }
+            };
+            document.addEventListener('keydown', onKey(true));
+            document.addEventListener('keyup', onKey(false));
+
+            document.addEventListener('mousemove', (e) => {
+                if (document.pointerLockElement === document.body) {
+                    // Use sensitivity variable here
+                    camera.rotation.y -= e.movementX * sensitivity;
+                    camera.rotation.x -= e.movementY * sensitivity;
+                    camera.rotation.x = Math.max(-Math.PI/2, Math.min(Math.PI/2, camera.rotation.x));
+                    
+                    mouseX = e.movementX;
+                    mouseY = e.movementY;
+                }
+            });
+        }
+
+        function onShoot() {
+            if (document.pointerLockElement !== document.body) return;
+
+            recoilAmount = 0.05;
+            muzzleFlash.material.opacity = 1;
+            muzzleLight.intensity = 2;
+            setTimeout(() => { 
+                muzzleFlash.material.opacity = 0; 
+                muzzleLight.intensity = 0;
+            }, 50);
+
+            raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+            const hits = raycaster.intersectObjects(targets);
+
+            if (hits.length > 0) {
+                const target = hits[0].object;
+                showHitmarker();
+                target.position.set((Math.random()-0.5)*80, 2 + Math.random()*15, (Math.random()-0.5)*80);
+                score += 100;
+                document.getElementById('score').innerText = score.toString().padStart(4, '0');
+            }
+        }
+
+        function showHitmarker() {
+            const hm = document.getElementById('hitmarker');
+            hm.style.display = 'block';
+            setTimeout(() => hm.style.display = 'none', 100);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+
+            if (document.pointerLockElement === document.body) {
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+                velocity.y -= 9.8 * 80.0 * delta;
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveLeft) - Number(moveRight);
+                direction.normalize();
+
+                if (moveForward || moveBackward) velocity.z -= direction.z * 400.0 * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * 400.0 * delta;
+
+                const moveVec = new THREE.Vector3(velocity.x * delta, 0, velocity.z * delta);
+                moveVec.applyQuaternion(camera.quaternion);
+                camera.position.add(moveVec);
+                camera.position.y += velocity.y * delta;
+
+                if (camera.position.y < 1.6) {
+                    velocity.y = 0;
+                    camera.position.y = 1.6;
+                    canJump = true;
+                }
+
+                const swayX = -mouseX * 0.0005;
+                const swayY = mouseY * 0.0005;
+                gunGroup.position.x = THREE.MathUtils.lerp(gunGroup.position.x, 0.3 + swayX, 0.1);
+                gunGroup.position.y = THREE.MathUtils.lerp(gunGroup.position.y, -0.3 + swayY, 0.1);
+
+                const isMoving = moveForward || moveBackward || moveLeft || moveRight;
+                if (isMoving && canJump) {
+                    bobbingCounter += delta * 12;
+                    const bobY = Math.sin(bobbingCounter) * 0.02;
+                    const bobX = Math.cos(bobbingCounter * 0.5) * 0.015;
+                    camera.position.y += bobY;
+                    gunGroup.position.y += bobY * 0.5;
+                    gunGroup.position.x += bobX * 0.5;
+                }
+
+                if (recoilAmount > 0) {
+                    camera.rotation.x += recoilAmount * 0.5;
+                    gunGroup.position.z = 0.1;
+                    recoilAmount *= 0.8;
+                } else {
+                    gunGroup.position.z = THREE.MathUtils.lerp(gunGroup.position.z, -0.5, 0.1);
+                }
+                
+                mouseX *= 0.9;
+                mouseY *= 0.9;
+
+                targets.forEach((t, i) => {
+                    t.position.y += Math.sin(Date.now() * 0.001 + i) * 0.02;
+                    t.rotation.y += 0.01;
+                });
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
